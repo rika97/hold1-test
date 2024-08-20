@@ -1,87 +1,177 @@
-//SPDX-License-Identifier: MIT
-pragma solidity >=0.8.0 <0.9.0;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
 
-// Useful for debugging. Remove when deploying to a live network.
-import "hardhat/console.sol";
+contract TrainGame {
+    address public owner;
+    uint256 public trainCounter;
+    uint256 public dailyJackpot;
+    uint256 public lastResetTime;
 
-// Use openzeppelin to inherit battle-tested implementations (ERC20, ERC721, etc)
-// import "@openzeppelin/contracts/access/Ownable.sol";
+    struct User {
+        address[] friends;
+        bool registered;
+    }
 
-/**
- * A smart contract that allows changing a state variable of the contract and tracking the changes
- * It also allows the owner to withdraw the Ether in the contract
- * @author BuidlGuidl
- */
-contract YourContract {
-	// State Variables
-	address public immutable owner;
-	string public greeting = "Building Unstoppable Apps!!!";
-	bool public premium = false;
-	uint256 public totalCounter = 0;
-	mapping(address => uint) public userGreetingCounter;
+    struct Train {
+        uint256 id;
+        address[] participants;
+        uint256 jackpotContribution;
+        uint256 startTime;
+        uint256 lastDepositTime;
+        bool isActive;
+    }
 
-	// Events: a way to emit log statements from smart contract that can be listened to by external parties
-	event GreetingChange(
-		address indexed greetingSetter,
-		string newGreeting,
-		bool premium,
-		uint256 value
-	);
+    mapping(address => User) public users;
+    mapping(uint256 => Train) public trains;
 
-	// Constructor: Called once on contract deployment
-	// Check packages/hardhat/deploy/00_deploy_your_contract.ts
-	constructor(address _owner) {
-		owner = _owner;
-	}
+    event UserRegistered(address user);
+    event FriendAdded(address user, address friend);
+    event TrainStarted(uint256 trainId, address initiator);
+    event TrainCompleted(uint256 trainId, bool success);
+    event DailyJackpotDistributed(uint256 timestamp, uint256 distributedAmount);
+    event DailyJackpotReset(uint256 timestamp, uint256 remainingJackpot);
 
-	// Modifier: used to define a set of rules that must be met before or after a function is executed
-	// Check the withdraw() function
-	modifier isOwner() {
-		// msg.sender: predefined variable that represents address of the account that called the current function
-		require(msg.sender == owner, "Not the Owner");
-		_;
-	}
+    constructor() {
+        owner = msg.sender;
+        lastResetTime = block.timestamp;
+    }
 
-	/**
-	 * Function that allows anyone to change the state variable "greeting" of the contract and increase the counters
-	 *
-	 * @param _newGreeting (string memory) - new greeting to save on the contract
-	 */
-	function setGreeting(string memory _newGreeting) public payable {
-		// Print data to the hardhat chain console. Remove when deploying to a live network.
-		console.log(
-			"Setting new greeting '%s' from %s",
-			_newGreeting,
-			msg.sender
-		);
+    // User Registration Logic
+    function registerUser() external {
+        require(!users[msg.sender].registered, "Already registered");
+        users[msg.sender].registered = true;
+        // Grant 1000 ONEs by transferring from the contract's balance
+        require(address(this).balance >= 1000 ether, "Contract doesn't have enough balance");
+        payable(msg.sender).transfer(1000 ether);
+        emit UserRegistered(msg.sender);
+    }
 
-		// Change state variables
-		greeting = _newGreeting;
-		totalCounter += 1;
-		userGreetingCounter[msg.sender] += 1;
+    // Friend Addition Logic
+    function addFriend(address friend) external {
+        require(users[msg.sender].registered, "Register first");
+        require(users[friend].registered, "Friend must be registered");
+        require(!isFriend(msg.sender, friend), "Already friends");
 
-		// msg.value: built-in global variable that represents the amount of ether sent with the transaction
-		if (msg.value > 0) {
-			premium = true;
-		} else {
-			premium = false;
-		}
+        users[msg.sender].friends.push(friend);
+        users[friend].friends.push(msg.sender);
 
-		// emit: keyword used to trigger an event
-		emit GreetingChange(msg.sender, _newGreeting, msg.value > 0, msg.value);
-	}
+        // Grant 500 ONEs to both users by transferring from the contract's balance
+        require(address(this).balance >= 1000 ether, "Contract doesn't have enough balance");
+        payable(msg.sender).transfer(500 ether);
+        payable(friend).transfer(500 ether);
 
-	/**
-	 * Function that allows the owner to withdraw all the Ether in the contract
-	 * The function can only be called by the owner of the contract as defined by the isOwner modifier
-	 */
-	function withdraw() public isOwner {
-		(bool success, ) = owner.call{ value: address(this).balance }("");
-		require(success, "Failed to send Ether");
-	}
+        emit FriendAdded(msg.sender, friend);
+    }
 
-	/**
-	 * Function that allows the contract to receive ETH
-	 */
-	receive() external payable {}
+    function isFriend(address user, address friend) internal view returns (bool) {
+        for (uint i = 0; i < users[user].friends.length; i++) {
+            if (users[user].friends[i] == friend) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Train Start Logic
+    function startTrain() external payable {
+        require(users[msg.sender].registered, "Register first");
+        require(msg.value > 0, "Must deposit some ONEs to start the train");
+
+        resetDailyJackpotIfNeeded();
+
+        trainCounter++;
+        trains[trainCounter] = Train({
+            id: trainCounter,
+            participants: new address [],
+            jackpotContribution: msg.value,
+            startTime: block.timestamp,
+            lastDepositTime: block.timestamp,
+            isActive: true
+        });
+
+        trains[trainCounter].participants.push(msg.sender);
+        dailyJackpot += msg.value;
+
+        emit TrainStarted(trainCounter, msg.sender);
+    }
+
+    // Deposit to Train
+    function depositToTrain(uint256 trainId) external payable {
+        require(users[msg.sender].registered, "Register first");
+        require(trains[trainId].isActive, "Train is not active");
+        require(msg.value > 0, "Must deposit some ONEs");
+
+        resetDailyJackpotIfNeeded();
+
+        trains[trainId].jackpotContribution += msg.value;
+        dailyJackpot += msg.value;
+        trains[trainId].lastDepositTime = block.timestamp; // Update last deposit time
+
+        trains[trainId].participants.push(msg.sender);
+
+        // Check if the train should remain active
+        if (block.timestamp - trains[trainId].lastDepositTime > 30 minutes) {
+            trains[trainId].isActive = false;
+        }
+    }
+
+    // Check Train Status
+    function checkTrainStatus(uint256 trainId, uint256 currentONEPrice, uint256 previousONEPrice) external {
+        require(trains[trainId].isActive, "Train is not active");
+
+        bool isSuccess = false;
+        uint256 timeElapsed = block.timestamp - trains[trainId].startTime;
+
+        if (timeElapsed >= 1 days || currentONEPrice >= previousONEPrice * 110 / 100) {
+            isSuccess = true;
+        }
+
+        trains[trainId].isActive = false;
+        emit TrainCompleted(trainId, isSuccess);
+    }
+
+    // Distribute Jackpot Automatically
+    function distributeJackpot() external {
+        require(block.timestamp >= lastResetTime + 1 days, "It's not time to distribute the jackpot yet");
+
+        uint256 distributedAmount = dailyJackpot * 50 / 100;
+        uint256 remainingJackpot = dailyJackpot - distributedAmount;
+
+        // Distribute 50% of the daily jackpot to random users of winning trains
+        for (uint256 i = 1; i <= trainCounter; i++) {
+            if (trains[i].isActive) {
+                distributeJackpotForTrain(i, distributedAmount);
+            }
+        }
+
+        dailyJackpot = remainingJackpot;
+        lastResetTime = block.timestamp;
+
+        emit DailyJackpotDistributed(block.timestamp, distributedAmount);
+        emit DailyJackpotReset(block.timestamp, remainingJackpot);
+    }
+
+    function distributeJackpotForTrain(uint256 trainId, uint256 distributedAmount) internal {
+        uint256 totalParticipants = trains[trainId].participants.length;
+        if (totalParticipants == 0) return;
+
+        uint256 reward = distributedAmount / totalParticipants;
+
+        for (uint256 i = 0; i < totalParticipants; i++) {
+            payable(trains[trainId].participants[i]).transfer(reward);
+        }
+    }
+
+    // Reset Daily Jackpot
+    function resetDailyJackpotIfNeeded() internal {
+        if (block.timestamp >= lastResetTime + 1 days) {
+            emit DailyJackpotReset(block.timestamp, dailyJackpot);
+
+            dailyJackpot = 0;
+            lastResetTime = block.timestamp;
+        }
+    }
+
+    // Fallback function to accept incoming ether
+    receive() external payable {}
 }
